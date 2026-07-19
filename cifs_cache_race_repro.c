@@ -37,14 +37,15 @@
 		while (getdents(dfd) > 0) {}
 		close(dfd)
 
-	Usage: cifs_cache_race_repro <test_path> [<filenum> [<num_threads>]]
-	  <filenum> exists to allow distinguishing test files from
-	    multiple clients executing simultaneously; defaults to 0
+	Usage: cifs_cache_race_repro <test_path> [<num_threads> [<num_iter>]]
+	  <test_path> specifies the directory in which to run the test
 	  <num_threads> allows for adjusting the number of simultaneous
-	    threads; defaults to 10
+	    threads; defaults to 5
+	  <num_iter> allows for adjusting the number of iterations to
+	    execute the test; defaults to INT_MAX
 
-	Reproduction requires about 8+ simultaneous executions of this reproducer
-	  sequence.
+	Reproduction requires as few as 2 threads, but requires fewer
+	  iterations with 5-10 threads
 */
 
 #define _GNU_SOURCE
@@ -60,8 +61,10 @@
 #include <pthread.h>
 #include <string.h>
 #include <dirent.h>
+#include <limits.h>
 
-#define DEFAULT_NUM_THREADS 6
+#define DEFAULT_NUM_THREADS 5
+#define DEFAULT_NUM_ITER INT_MAX
 #define DIRENT_BUF_SIZE 65536
 #define BUF_SIZE 4096
 #define WRITE_SIZE1 1400
@@ -82,6 +85,8 @@
 		close(x); \
 	x = -1; \
 } while (0)
+
+pid_t pid;
 
 int read_dir(const char *path) {
 	char *dirent_buf = NULL;
@@ -128,7 +133,7 @@ out:
 	return written;
 }
 
-int process_one(int threadnum, int filenum) {
+int process_one(int threadnum) {
 	int fd = -1;
 	char *filename1 = NULL, *filename2 = NULL, buf[BUF_SIZE];
 	struct stat st1, st2, st3;
@@ -136,8 +141,8 @@ int process_one(int threadnum, int filenum) {
 
 	memset(buf, 'X', sizeof(buf));
 
-	asprintf(&filename1, "work/file_%d_%d.xml__temp", threadnum, filenum); // work/file_1_1.xml__temp
-	asprintf(&filename2, "work/file_%d_%d.xml", threadnum, filenum); // work/file_1_1.xml
+	asprintf(&filename1, "work/file_%d_%d.xml__temp", threadnum, pid); // work/file_1_1.xml__temp
+	asprintf(&filename2, "work/file_%d_%d.xml", threadnum, pid); // work/file_1_1.xml
 
 	// cleanup/setup
 	unlink(filename1);
@@ -201,35 +206,32 @@ out:
 
 typedef struct {
 	int threadnum;
-	int filenum;
 	int result;
 } thread_data_t;
 
 void* thread_wrapper(void *arg) {
 	thread_data_t *data = (thread_data_t *)arg;
-	data->result = process_one(data->threadnum, data->filenum);
+	data->result = process_one(data->threadnum);
 	return NULL;
 }
 
 int main(int argc, char *argv[]) {
-	int num_threads = DEFAULT_NUM_THREADS;
+	int num_threads = DEFAULT_NUM_THREADS, max_iter = DEFAULT_NUM_ITER;
+	int failed_count = 0, iter = 0, i;
 	thread_data_t *thread_data;
-	pthread_t *threads;
 	char *test_path = argv[1];
-	int failed_count = 0;
-	int filenum, i;
+	pthread_t *threads;
 
-	if (argc == 4) {
-		filenum = strtol(argv[2], NULL, 10);
-		num_threads = strtol(argv[3], NULL, 10);
-	} else if (argc == 3) {
-		filenum = strtol(argv[2], NULL, 10);
-	} else if (argc == 2) {
-		filenum = 0;
-	} else {
-		output("Usage: %s <test_path> [<filenum> [<num_threads>]]\n", argv[0]);
+	if (argc < 2 || argc > 4) {
+		output("Usage: %s <test_path> [<num_threads> [<iteration_count>]]\n", argv[0]);
 		return EXIT_FAILURE;
 	}
+	if (argc >= 3)
+		num_threads = strtol(argv[2], NULL, 10);
+	if (argc == 4)
+		max_iter = strtol(argv[3], NULL, 10);
+
+	pid = getpid();
 
 	if (chdir(test_path) < 0) {
 		output("error changing to test path %s: %m\n", test_path);
@@ -242,31 +244,33 @@ int main(int argc, char *argv[]) {
 
 	threads = malloc(num_threads * sizeof(pthread_t));
 	thread_data = malloc(num_threads * sizeof(thread_data_t));
-	for (i = 0; i < num_threads ; i++) {
-		thread_data[i].threadnum = i;
-		thread_data[i].filenum = filenum;
-		thread_data[i].result = EXIT_FAILURE;
 
-		if (pthread_create(&threads[i], NULL, thread_wrapper, &thread_data[i]) != 0) {
-			output("Error creating thread %d\n", i);
+	while (iter++ < max_iter) {
+		output("iteration %d - ", iter);
+
+		for (i = 0; i < num_threads ; i++) {
+			thread_data[i].threadnum = i;
+			thread_data[i].result = EXIT_FAILURE;
+
+			if (pthread_create(&threads[i], NULL, thread_wrapper, &thread_data[i]) != 0) {
+				output("Error creating thread %d\n", i);
+				return EXIT_FAILURE;
+			}
+		}
+
+		// Reap all threads
+		for (i = 0; i < num_threads ; i++) {
+			pthread_join(threads[i], NULL);
+			if (thread_data[i].result != EXIT_SUCCESS)
+				failed_count++;
+		}
+
+		// Report results
+		if (failed_count > 0) {
+			output("FAILED: %d out of %d threads failed\n", failed_count, num_threads);
 			return EXIT_FAILURE;
-		}
+		} else
+			output("SUCCESS: All %d threads completed successfully\n", num_threads);
 	}
-
-	// Reap all threads
-	for (i = 0; i < num_threads ; i++) {
-		pthread_join(threads[i], NULL);
-		if (thread_data[i].result != EXIT_SUCCESS) {
-			failed_count++;
-		}
-	}
-
-	// Report results
-	if (failed_count > 0) {
-		output("FAILED: %d out of %d threads failed\n", failed_count, num_threads);
-		return EXIT_FAILURE;
-	} else {
-		output("SUCCESS: All %d threads completed successfully\n", num_threads);
-		return EXIT_SUCCESS;
-	}
+	return EXIT_SUCCESS;
 }
