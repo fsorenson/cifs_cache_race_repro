@@ -1,38 +1,29 @@
 /*
 	Frank Sorenson <frank.sorenson@gmail.com>, 2026
 
-	cifs_cache_race_repro - reproduces two race conditions that cause
+	cifs_cache_race_repro - reproduces a race condition that causes
 	  directory cache corruption on a cifs filesystem.
 
 
-	(numbered in the order these were identified)
-	BUG 1:
-		When SMB2 directory lease breaks occur concurrently with readdir
-		(getdents) operations, the lease break handler can invalidate the
-		directory cache while readdir is still traversing it, corrupting the
-		dcache and causing subsequent stat() calls to return wrong file sizes
-		or EIO errors.
+	Windows Server's directory enumeration metadata lags behind the actual
+	  file size after a write+close or rename.  A concurrent readdir() in
+	  the window between close() returning to userspace and stat() being
+	  called overwrites the correct cached i_size with the stale server
+	  value, causing stat() to return the wrong size.
 
-	Bug 2:
-		Windows Server's directory-level view of a file's size lags behind
-		the actual file size, so immediately after a write+close,
-		simultaneous directory enumeration (readdir/getdents) will overwrite
-		the directory cache with a stale file size, leading to an incorrect
-		size in stat().
-
-	the sequence of operations is identical for both bugs:
+	the sequence of operations:
 		fd = open(“work/a_#.temp”, O_CREAT|O_TRUNC)
 		write(fd, buf, 1400)
 		close(fd)
-		stat("work/a_#.temp", &st1) // <<<< bug 2 if size != 1400
+		stat("work/a_#.temp", &st1) // <<<< bug if size != 1400
 
 		fd = open("work/a_#.temp", O_CREAT|O_TRUNC)
 		write(fd, buf, 1290)
 		close(fd)
-		stat("work/a_#.temp", &st2) // <<<< bug 2 if size != 1290
+		stat("work/a_#.temp", &st2) // <<<< bug if size != 1290
 
 		rename("work/a_#.temp", "work/a_#")
-		stat("work/a_#", &st3) // <<<< bug 1 if size != 1290
+		stat("work/a_#", &st3) // <<<< bug if size != 1290
 		dfd = open(“work”, O_DIRECTORY)
 		while (getdents(dfd) > 0) {}
 		close(dfd)
@@ -161,7 +152,7 @@ int process_one(int threadnum) {
 		goto out;
 	}
 	if (st1.st_size != WRITE_SIZE1) {
-		output("BUG 2: wrote %d bytes to file %s, but stat returned %ld\n", WRITE_SIZE1, filename1, st1.st_size);
+		output("BUG: wrote %d bytes to file %s, but stat returned %ld\n", WRITE_SIZE1, filename1, st1.st_size);
 		goto out;
 	}
 
@@ -178,7 +169,7 @@ int process_one(int threadnum) {
 		goto out;
 	}
 	if (st2.st_size != WRITE_SIZE2) {
-		output("BUG 3: wrote %d bytes to file %s, but stat returned %ld\n", WRITE_SIZE2, filename1, st2.st_size);
+		output("BUG: wrote %d bytes to file %s, but stat returned %ld\n", WRITE_SIZE2, filename1, st2.st_size);
 		goto out;
 	}
 
@@ -188,7 +179,7 @@ int process_one(int threadnum) {
 	}
 	stat(filename2, &st3); // work/file_1_1.xml
 	if ((intmax_t)st2.st_size != (intmax_t)st3.st_size) {
-		output("BUG 1: file size of '%s' prior to rename: %ld, file size of '%s' after rename: %ld\n",
+		output("BUG: file size of '%s' prior to rename: %ld, file size of '%s' after rename: %ld\n",
 			filename1, (intmax_t)st2.st_size, filename2, (intmax_t)st3.st_size);
 		goto out;
 	}
