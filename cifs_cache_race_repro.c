@@ -15,15 +15,15 @@
 		fd = open(“work/a_#.temp”, O_CREAT|O_TRUNC)
 		write(fd, buf, 1400)
 		close(fd)
-		stat("work/a_#.temp", &st1) // <<<< bug if size != 1400
+		stat("work/a_#.temp", &st) // <<<< bug if size != 1400
 
 		fd = open("work/a_#.temp", O_CREAT|O_TRUNC)
 		write(fd, buf, 1290)
 		close(fd)
-		stat("work/a_#.temp", &st2) // <<<< bug if size != 1290
+		stat("work/a_#.temp", &st) // <<<< bug if size != 1290
 
 		rename("work/a_#.temp", "work/a_#")
-		stat("work/a_#", &st3) // <<<< bug if size != 1290
+		stat("work/a_#", &st) // <<<< bug if size != 1290
 		dfd = open(“work”, O_DIRECTORY)
 		while (getdents(dfd) > 0) {}
 		close(dfd)
@@ -128,10 +128,17 @@ out:
 	return written;
 }
 
+#define try_stat(filename, st) do { \
+	if (stat(filename, st) < 0) { \
+		output("error calling stat on %s: %m\n", filename); \
+		goto out; \
+	} \
+} while (0)
+
 int process_one() {
 	int fd = -1;
 	char *filename1 = NULL, *filename2 = NULL, buf[BUF_SIZE];
-	struct stat st1, st2, st3;
+	struct stat st;
 	int ret = EXIT_FAILURE;
 	pid_t tid = gettid();
 
@@ -152,12 +159,9 @@ int process_one() {
 		goto out;
 	close_fd(fd); // work/file_#.xml__temp
 
-	if (stat(filename1, &st1) < 0) { // work/file_#.xml__temp
-		output("error calling stat on %s: %m\n", filename1);
-		goto out;
-	}
-	if (st1.st_size != WRITE_SIZE1) {
-		output("BUG: wrote %d bytes to file %s, but stat returned %ld\n", WRITE_SIZE1, filename1, st1.st_size);
+	try_stat(filename1, &st); // work/file_#.xml__temp
+	if (st.st_size != WRITE_SIZE1) {
+		output("BUG: wrote %d bytes to file %s, but stat returned %ld\n", WRITE_SIZE1, filename1, st.st_size);
 		goto out;
 	}
 
@@ -169,12 +173,9 @@ int process_one() {
 		goto out;
 	close_fd(fd); // work/file_#.xml__temp
 
-	if (stat(filename1, &st2) < 0) { // work/file_#.xml__temp
-		output("error calling stat on %s: %m\n", filename1);
-		goto out;
-	}
-	if (st2.st_size != WRITE_SIZE2) {
-		output("BUG: wrote %d bytes to file %s, but stat returned %ld\n", WRITE_SIZE2, filename1, st2.st_size);
+	try_stat(filename1, &st); // work/file_#.xml__temp
+	if (st.st_size != WRITE_SIZE2) {
+		output("BUG: wrote %d bytes to file %s, but stat returned %ld\n", WRITE_SIZE2, filename1, st.st_size);
 		goto out;
 	}
 
@@ -182,10 +183,10 @@ int process_one() {
 		output("error renaming %s -> %s: %m\n", filename1, filename2);
 		goto out;
 	}
-	stat(filename2, &st3); // work/file_#.xml
-	if ((intmax_t)st2.st_size != (intmax_t)st3.st_size) {
-		output("BUG: file size of '%s' prior to rename: %ld, file size of '%s' after rename: %ld\n",
-			filename1, (intmax_t)st2.st_size, filename2, (intmax_t)st3.st_size);
+	try_stat(filename2, &st); // work/file_#.xml
+	if (st.st_size != WRITE_SIZE2) {
+		output("BUG: size of file after rename to '%s' should be %d, but is %ld\n",
+			filename2, WRITE_SIZE2, st.st_size);
 		goto out;
 	}
 
