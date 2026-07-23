@@ -191,6 +191,7 @@ int process_one() {
 
 	read_dir("work");
 
+	unlink(filename2);
 	ret = EXIT_SUCCESS;
 out:
 	close_fd(fd);
