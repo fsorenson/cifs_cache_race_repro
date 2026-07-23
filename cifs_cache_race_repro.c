@@ -77,7 +77,11 @@
 	x = -1; \
 } while (0)
 
-pid_t pid;
+#ifndef gettid
+pid_t gettid(void) {
+	return syscall(SYS_gettid);
+}
+#endif
 
 int read_dir(const char *path) {
 	char *dirent_buf = NULL;
@@ -124,30 +128,31 @@ out:
 	return written;
 }
 
-int process_one(int threadnum) {
+int process_one() {
 	int fd = -1;
 	char *filename1 = NULL, *filename2 = NULL, buf[BUF_SIZE];
 	struct stat st1, st2, st3;
 	int ret = EXIT_FAILURE;
+	pid_t tid = gettid();
 
 	memset(buf, 'X', sizeof(buf));
 
-	asprintf(&filename1, "work/file_%d_%d.xml__temp", threadnum, pid); // work/file_1_1.xml__temp
-	asprintf(&filename2, "work/file_%d_%d.xml", threadnum, pid); // work/file_1_1.xml
+	asprintf(&filename1, "work/file_%d.xml__temp", tid); // work/file_#.xml__temp
+	asprintf(&filename2, "work/file_%d.xml", tid); // work/file_#.xml
 
 	// cleanup/setup
 	unlink(filename1);
 	unlink(filename2);
 
-	if ((fd = open(filename1, O_CREAT|O_TRUNC|O_RDWR, 0644)) < 0) { // work/file_1_1.xml__temp
+	if ((fd = open(filename1, O_CREAT|O_TRUNC|O_RDWR, 0644)) < 0) { // work/file_#.xml__temp
 		output("error opening %s: %m\n", filename1);
 		goto out;
 	}
 	if (write_bytes(filename1, fd, buf, WRITE_SIZE1) < 0)
 		goto out;
-	close_fd(fd); // work/file_1_1.xml__temp
+	close_fd(fd); // work/file_#.xml__temp
 
-	if (stat(filename1, &st1) < 0) { // work/file_1_1.xml__temp
+	if (stat(filename1, &st1) < 0) { // work/file_#.xml__temp
 		output("error calling stat on %s: %m\n", filename1);
 		goto out;
 	}
@@ -156,15 +161,15 @@ int process_one(int threadnum) {
 		goto out;
 	}
 
-	if ((fd = open(filename1, O_CREAT|O_TRUNC|O_RDWR, 0644)) < 0) { // work/file_1_1.xml__temp
+	if ((fd = open(filename1, O_CREAT|O_TRUNC|O_RDWR, 0644)) < 0) { // work/file_#.xml__temp
 		output("error opening %s: %m\n", filename1);
 		goto out;
 	}
 	if (write_bytes(filename1, fd, buf, WRITE_SIZE2) < 0)
 		goto out;
-	close_fd(fd); // work/file_1_1.xml__temp
+	close_fd(fd); // work/file_#.xml__temp
 
-	if (stat(filename1, &st2) < 0) { // work/file_1_1.xml__temp
+	if (stat(filename1, &st2) < 0) { // work/file_#.xml__temp
 		output("error calling stat on %s: %m\n", filename1);
 		goto out;
 	}
@@ -173,11 +178,11 @@ int process_one(int threadnum) {
 		goto out;
 	}
 
-	if (rename(filename1, filename2) < 0) { // work/file_1_1.xml__temp, work/file_1_1.xml
+	if (rename(filename1, filename2) < 0) { // work/file_#.xml__temp, work/file_#.xml
 		output("error renaming %s -> %s: %m\n", filename1, filename2);
 		goto out;
 	}
-	stat(filename2, &st3); // work/file_1_1.xml
+	stat(filename2, &st3); // work/file_#.xml
 	if ((intmax_t)st2.st_size != (intmax_t)st3.st_size) {
 		output("BUG: file size of '%s' prior to rename: %ld, file size of '%s' after rename: %ld\n",
 			filename1, (intmax_t)st2.st_size, filename2, (intmax_t)st3.st_size);
@@ -189,20 +194,19 @@ int process_one(int threadnum) {
 	ret = EXIT_SUCCESS;
 out:
 	close_fd(fd);
-	free_buf(filename1); // work/file_1_1.xml__temp
-	free_buf(filename2); // work/file_1_1.xml
+	free_buf(filename1); // work/file_#.xml__temp
+	free_buf(filename2); // work/file_#.xml
 
 	return ret;
 }
 
 typedef struct {
-	int threadnum;
 	int result;
 } thread_data_t;
 
 void* thread_wrapper(void *arg) {
 	thread_data_t *data = (thread_data_t *)arg;
-	data->result = process_one(data->threadnum);
+	data->result = process_one();
 	return NULL;
 }
 
@@ -222,8 +226,6 @@ int main(int argc, char *argv[]) {
 	if (argc == 4)
 		max_iter = strtol(argv[3], NULL, 10);
 
-	pid = getpid();
-
 	if (chdir(test_path) < 0) {
 		output("error changing to test path %s: %m\n", test_path);
 		return EXIT_FAILURE;
@@ -240,7 +242,6 @@ int main(int argc, char *argv[]) {
 		output("iteration %d - ", iter);
 
 		for (i = 0; i < num_threads ; i++) {
-			thread_data[i].threadnum = i;
 			thread_data[i].result = EXIT_FAILURE;
 
 			if (pthread_create(&threads[i], NULL, thread_wrapper, &thread_data[i]) != 0) {
