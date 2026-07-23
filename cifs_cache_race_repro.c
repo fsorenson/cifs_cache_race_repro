@@ -127,10 +127,9 @@ retry_write:
 		write_offset += written;
 		goto retry_write;
 	}
-	written += write_offset;
 
 out:
-	return written;
+	return written < 0 ? written : written + write_offset;
 }
 
 #define try_stat(filename, st) do { \
