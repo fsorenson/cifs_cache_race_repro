@@ -24,6 +24,10 @@
 
 		rename("work/a_#.temp", "work/a_#")
 		stat("work/a_#", &st) // <<<< bug if size != 1290
+
+		truncate("work/a_#", 1100)
+		stat("work/a_#", &st) // <<<< bug if size != 1100
+
 		dfd = open(“work”, O_DIRECTORY)
 		while (getdents(dfd) > 0) {}
 		close(dfd)
@@ -60,6 +64,7 @@
 #define BUF_SIZE 4096
 #define WRITE_SIZE1 1400
 #define WRITE_SIZE2 1290
+#define TRUNC_SIZE 1100
 
 #define output(args...) do { \
 	printf(args); \
@@ -187,6 +192,16 @@ int process_one() {
 	if (st.st_size != WRITE_SIZE2) {
 		output("BUG: size of file after rename to '%s' should be %d, but is %ld\n",
 			filename2, WRITE_SIZE2, st.st_size);
+		goto out;
+	}
+
+	if (truncate(filename2, TRUNC_SIZE) < 0) { // work/file_#.xml
+		output("error truncating %s to %d: %m\n", filename2, TRUNC_SIZE);
+		goto out;
+	}
+	try_stat(filename2, &st); // work/file_#.xml
+	if (st.st_size != TRUNC_SIZE) {
+		output("BUG: truncated %s to %d bytes, but stat returned %ld\n", filename2, TRUNC_SIZE, st.st_size);
 		goto out;
 	}
 
