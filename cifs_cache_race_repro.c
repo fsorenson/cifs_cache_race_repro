@@ -17,7 +17,7 @@
 		close(fd)
 		stat("work/a_#.temp", &st) // <<<< bug if size != 1400
 
-		fd = open("work/a_#.temp", O_CREAT|O_TRUNC)
+		fd = open("work/a_#.temp", O_TRUNC)
 		write(fd, buf, 1290)
 		close(fd)
 		stat("work/a_#.temp", &st) // <<<< bug if size != 1290
@@ -84,7 +84,7 @@
 
 #ifndef gettid
 pid_t gettid(void) {
-	return syscall(SYS_gettid);
+        return syscall(SYS_gettid);
 }
 #endif
 
@@ -139,7 +139,7 @@ out:
 	} \
 } while (0)
 
-int process_one() {
+int process_one(void) {
 	int fd = -1;
 	char *filename1 = NULL, *filename2 = NULL, buf[BUF_SIZE];
 	struct stat st;
@@ -155,6 +155,7 @@ int process_one() {
 	unlink(filename1);
 	unlink(filename2);
 
+	// case 1: open(O_CREAT)/write(WRITE_SIZE1)/close()/stat()
 	if ((fd = open(filename1, O_CREAT|O_TRUNC|O_RDWR, 0644)) < 0) { // work/file_#.xml__temp
 		output("error opening %s: %m\n", filename1);
 		goto out;
@@ -169,7 +170,8 @@ int process_one() {
 		goto out;
 	}
 
-	if ((fd = open(filename1, O_CREAT|O_TRUNC|O_RDWR, 0644)) < 0) { // work/file_#.xml__temp
+	// case 2: open(O_TRUNC)/write(WRITE_SIZE2)/close()/stat()
+	if ((fd = open(filename1, O_TRUNC|O_RDWR)) < 0) { // work/file_#.xml__temp
 		output("error opening %s: %m\n", filename1);
 		goto out;
 	}
@@ -183,6 +185,7 @@ int process_one() {
 		goto out;
 	}
 
+	// case 3: rename()/stat()
 	if (rename(filename1, filename2) < 0) { // work/file_#.xml__temp, work/file_#.xml
 		output("error renaming %s -> %s: %m\n", filename1, filename2);
 		goto out;
@@ -194,6 +197,7 @@ int process_one() {
 		goto out;
 	}
 
+	// case 4: truncate()/stat()
 	if (truncate(filename2, TRUNC_SIZE) < 0) { // work/file_#.xml
 		output("error truncating %s to %d: %m\n", filename2, TRUNC_SIZE);
 		goto out;
